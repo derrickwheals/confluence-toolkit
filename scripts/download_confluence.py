@@ -190,11 +190,17 @@ class ConfluenceDownloader:
         self.output_dir.mkdir(exist_ok=True)
         self.save_html = save_html
         self.download_children = download_children
+        self._children_cache: Dict[str, List[Dict]] = {}
 
         # Create HTML debug directory if requested
         if self.save_html:
             self.html_dir = output_dir / '_html_debug'
             self.html_dir.mkdir(exist_ok=True)
+
+    def _get_children(self, page_id: str) -> List[Dict]:
+        if page_id not in self._children_cache:
+            self._children_cache[page_id] = self.validator.get_children(page_id)
+        return self._children_cache[page_id]
 
     def download_page(self, page_id: str, max_retries: int = 3, target_dir: Optional[Path] = None, parent_title: Optional[str] = None) -> Tuple[bool, str]:
         """
@@ -335,19 +341,27 @@ class ConfluenceDownloader:
 
                 # Download children if enabled
                 if self.download_children:
-                    children_data = self.validator.get_children(page_id)
+                    children_data = self._get_children(page_id)
                     if children_data:
                         # Create subdirectory for children
                         children_dir = target_dir / f"{safe_title}_Children"
                         children_dir.mkdir(exist_ok=True)
                         logger.info(f"📁 Downloading {len(children_data)} children to {children_dir.relative_to(self.output_dir)}/")
 
+                        child_failures = []
                         for child in children_data:
                             child_id = child['id']
                             child_title = child['title']
                             logger.info(f"  ↳ Child: {child_title} ({child_id})")
                             # Recursively download child page
-                            self.download_page(child_id, max_retries, children_dir, title)
+                            child_success, child_message = self.download_page(child_id, max_retries, children_dir, title)
+                            if not child_success:
+                                child_failures.append(f"{child_title} ({child_id}): {child_message}")
+
+                        if child_failures:
+                            message = f"Failed child page download(s) for {title}: " + "; ".join(child_failures)
+                            logger.error(message)
+                            return False, message
 
                 return True, f"Success: {filename} ({file_size:,} bytes)"
 
@@ -417,7 +431,7 @@ class ConfluenceDownloader:
         def replace_children_macro(match):
             # Get actual children from API
             try:
-                children_data = self.validator.get_children(page_id)
+                children_data = self._get_children(page_id)
                 if children_data:
                     # Create HTML list that will be converted to markdown
                     items = []
@@ -1068,7 +1082,7 @@ class ConfluenceDownloader:
             }
 
         # Add children if available
-        children_data = self.validator.get_children(page_info['id'])
+        children_data = self._get_children(page_info['id'])
         if children_data:
             # If download_children is enabled, children will be in subdirectory
             current_title = self._sanitize_filename(page_info['title'])
