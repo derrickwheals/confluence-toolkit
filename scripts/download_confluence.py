@@ -132,6 +132,14 @@ class ConfluenceValidator:
 
         return attachments
 
+    def get_user_display_name(self, user_key: str) -> Optional[str]:
+        """Resolve a Confluence user key to a display name."""
+        url = f"{self.api_base}/user"
+        response = self.session.get(url, params={'key': user_key})
+        response.raise_for_status()
+        data = response.json()
+        return data.get('displayName') or data.get('username')
+
     def download_attachment(self, attachment: Dict, output_dir: Path, page_title: str) -> Optional[Path]:
         """Download an attachment to the page-specific attachments directory."""
         try:

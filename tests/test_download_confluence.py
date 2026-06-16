@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 import requests
+from markdownify import markdownify as md
 
 
 ROOT = Path(__file__).resolve().parents[1]
