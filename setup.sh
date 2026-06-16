@@ -19,12 +19,14 @@ else
 fi
 
 # ── 2. Upgrade pip inside the venv ──────────────────────────────────────────
+# --no-user overrides any 'user = true' in the global pip config, which is
+# incompatible with venv installs and causes an immediate failure.
 echo "Upgrading pip..."
-.venv/bin/python3 -m pip install --upgrade pip --quiet
+.venv/bin/python3 -m pip install --upgrade pip --quiet --no-user
 
 # ── 3. Install dependencies ──────────────────────────────────────────────────
 echo "Installing requirements..."
-.venv/bin/pip install -r requirements.txt --quiet
+.venv/bin/pip install -r requirements.txt --quiet --no-user
 
 # ── 4. Create .env from template if not present ──────────────────────────────
 if [ ! -f ".env" ]; then
