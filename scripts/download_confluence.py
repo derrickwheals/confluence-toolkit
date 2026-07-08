@@ -199,6 +199,7 @@ class ConfluenceDownloader:
         self.save_html = save_html
         self.download_children = download_children
         self._children_cache: Dict[str, List[Dict]] = {}
+        self._user_display_name_cache: Dict[str, Optional[str]] = {}
 
         # Create HTML debug directory if requested
         if self.save_html:
@@ -511,6 +512,7 @@ class ConfluenceDownloader:
         self._expand_rich_text_macros(soup)
         self._unwrap_layout_tags(soup)
         self._expand_tables_with_images(soup)
+        self._normalize_mixed_table_header_rows(soup)
         self._separate_images_from_headings(soup)
 
         # Replace Confluence-specific tags with explicit placeholders so
@@ -538,6 +540,8 @@ class ConfluenceDownloader:
                 value = tag.get(attr_name)
                 if isinstance(value, str):
                     tag[attr_name] = html_lib.unescape(value)
+
+        self._prepare_table_images_for_markdownify(soup)
 
         return str(soup)
 
@@ -586,7 +590,7 @@ class ConfluenceDownloader:
         """Flatten layout tables that primarily embed images."""
         tables = list(soup.find_all('table'))
         for table in tables:
-            if not table.find('img'):
+            if not self._is_image_layout_table(table):
                 continue
 
             replacement_nodes = []
@@ -606,6 +610,40 @@ class ConfluenceDownloader:
             for node in reversed(replacement_nodes):
                 table.insert_after(node)
             table.decompose()
+
+    def _is_image_layout_table(self, table) -> bool:
+        """Return True only for image-only layout tables, not data tables."""
+        if not table.find('img'):
+            return False
+
+        if table.find('th'):
+            return False
+
+        cells = table.find_all(['td', 'th'])
+        if not cells:
+            return False
+
+        non_empty_cells = []
+        for cell in cells:
+            has_image = cell.find('img') is not None
+            text = cell.get_text(" ", strip=True)
+            if has_image or text:
+                non_empty_cells.append((has_image, text))
+
+        if not non_empty_cells:
+            return False
+
+        return all(has_image and not text for has_image, text in non_empty_cells)
+
+    def _normalize_mixed_table_header_rows(self, soup) -> None:
+        """Convert mixed th/td first rows into proper header rows."""
+        for table in soup.find_all('table'):
+            first_row = table.find('tr')
+            if not first_row or not first_row.find('th', recursive=False):
+                continue
+
+            for cell in first_row.find_all(['td', 'th'], recursive=False):
+                cell.name = 'th'
 
     def _unwrap_layout_tags(self, soup) -> None:
         """Flatten Confluence layout wrappers so nested content survives conversion."""
@@ -631,6 +669,20 @@ class ConfluenceDownloader:
                 paragraph = soup.new_tag('p')
                 paragraph.append(image.extract())
                 heading.insert_after(paragraph)
+
+    def _prepare_table_images_for_markdownify(self, soup) -> None:
+        """Preserve image links when markdownify renders table cell text."""
+        for table in soup.find_all('table'):
+            for image in table.find_all('img'):
+                src = image.get('src')
+                if not isinstance(src, str) or not src.strip():
+                    continue
+
+                src = src.strip()
+                alt = image.get('alt') or Path(urlparse(src).path).name or src
+                alt = re.sub(r'\s+', ' ', str(alt)).strip()
+                alt = alt.replace('|', '\\|').replace('[', '\\[').replace(']', '\\]')
+                image['alt'] = f'![{alt}]({src.replace(")", "%29")})'
 
     def _replace_confluence_links_with_placeholders(self, soup) -> None:
         """Replace <ac:link> blocks with markdown-safe placeholders."""
@@ -733,8 +785,32 @@ class ConfluenceDownloader:
             lambda t: getattr(t, 'name', '') in ('ri:url', 'url')
             or getattr(t, 'name', '').endswith(':url')
         )
+        user_tag = link_tag.find(
+            lambda t: getattr(t, 'name', '') in ('ri:user', 'user')
+            or getattr(t, 'name', '').endswith(':user')
+        )
 
         link_text = self._extract_confluence_link_text(link_tag)
+
+        if user_tag:
+            user_key = (
+                user_tag.get('ri:userkey')
+                or user_tag.get('userkey')
+                or user_tag.get('ri:account-id')
+                or user_tag.get('account-id')
+            )
+            display_name = self._resolve_user_display_name(user_key)
+            if display_name:
+                return display_name.replace('|', '\\|')
+            if link_text:
+                return link_text
+            return self._format_placeholder(
+                'confluence-link',
+                {
+                    'type': 'user',
+                    'key': user_key,
+                },
+            )
 
         if page_tag:
             return self._format_placeholder(
@@ -775,6 +851,25 @@ class ConfluenceDownloader:
                 'text': link_text or link_tag.get_text(" ", strip=True),
             },
         )
+
+    def _resolve_user_display_name(self, user_key: Optional[str]) -> Optional[str]:
+        """Resolve Confluence user keys once per download."""
+        if not user_key:
+            return None
+
+        if user_key in self._user_display_name_cache:
+            return self._user_display_name_cache[user_key]
+
+        display_name = None
+        resolver = getattr(self.validator, 'get_user_display_name', None)
+        if resolver:
+            try:
+                display_name = resolver(user_key)
+            except Exception as exc:
+                logger.warning(f"Unable to resolve Confluence user {user_key}: {exc}")
+
+        self._user_display_name_cache[user_key] = display_name
+        return display_name
 
     def _extract_confluence_link_text(self, link_tag) -> str:
         """Extract display text from ac:link rich/plain-text body elements."""

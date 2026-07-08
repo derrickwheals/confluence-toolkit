@@ -19,6 +19,9 @@ class FakeResponse:
 
 class FakeValidator:
     web_base = "https://confluence.example.test"
+    user_display_names = {
+        "user-123": "Manorma Kumari",
+    }
 
     def get_page_info(self, page_id):
         if page_id == "child-missing":
@@ -45,6 +48,9 @@ class FakeValidator:
         if page_id == "parent":
             return [{"id": "child-missing", "title": "Missing Child"}]
         return []
+
+    def get_user_display_name(self, user_key):
+        return self.user_display_names.get(user_key)
 
 
 class CountingValidator:
@@ -108,6 +114,112 @@ class DownloadConfluenceTests(unittest.TestCase):
 
         self.assertTrue(success, message)
         self.assertEqual(validator.children_calls, {"parent": 1, "child": 1})
+
+    def test_data_tables_with_images_remain_tables(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = ConfluenceDownloader(FakeValidator(), Path(tmpdir))
+
+            normalized = downloader._normalize_storage_markup(
+                """
+                <table>
+                  <tbody>
+                    <tr><th>Sl#</th><th>Client</th><th>Evidence</th></tr>
+                    <tr>
+                      <td>1</td>
+                      <td>United Overseas Bank Group - UOB</td>
+                      <td><img src="Phoenix_pilot_client_QC_attachments/uob.png" alt="uob.png" /></td>
+                    </tr>
+                  </tbody>
+                </table>
+                """
+            )
+
+        self.assertIn("<table", normalized)
+        self.assertIn("<th>Sl#</th>", normalized)
+        self.assertIn("<td>United Overseas Bank Group - UOB</td>", normalized)
+
+    def test_table_images_remain_markdown_image_links(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = ConfluenceDownloader(FakeValidator(), Path(tmpdir))
+
+            normalized = downloader._normalize_storage_markup(
+                """
+                <table>
+                  <tbody>
+                    <tr><th>Evidence</th></tr>
+                    <tr>
+                      <td><img src="Phoenix_pilot_client_QC_attachments/uob.png" alt="uob.png" /></td>
+                    </tr>
+                  </tbody>
+                </table>
+                """
+            )
+            markdown = downloader._clean_markdown(
+                md(
+                    normalized,
+                    heading_style="ATX",
+                    bullets="-",
+                    code_language="",
+                    strip=["script", "style"],
+                )
+            )
+
+        self.assertIn("| ![uob.png](Phoenix_pilot_client_QC_attachments/uob.png) |", markdown)
+
+    def test_mixed_table_header_cells_become_markdown_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = ConfluenceDownloader(FakeValidator(), Path(tmpdir))
+
+            normalized = downloader._normalize_storage_markup(
+                """
+                <table>
+                  <tbody>
+                    <tr><th>Sl#</th><td>Action owner</td></tr>
+                    <tr><td>1</td><td>Team A</td></tr>
+                  </tbody>
+                </table>
+                """
+            )
+            markdown = downloader._clean_markdown(
+                md(
+                    normalized,
+                    heading_style="ATX",
+                    bullets="-",
+                    code_language="",
+                    strip=["script", "style"],
+                )
+            )
+
+        self.assertTrue(markdown.startswith("| Sl# | Action owner |\n| --- | --- |"))
+
+    def test_user_mentions_in_table_cells_become_display_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = ConfluenceDownloader(FakeValidator(), Path(tmpdir))
+
+            normalized = downloader._normalize_storage_markup(
+                """
+                <table>
+                  <tbody>
+                    <tr><th>Defect raised by</th></tr>
+                    <tr>
+                      <td><ac:link><ri:user ri:userkey="user-123" /></ac:link></td>
+                    </tr>
+                  </tbody>
+                </table>
+                """
+            )
+            markdown = downloader._clean_markdown(
+                md(
+                    normalized,
+                    heading_style="ATX",
+                    bullets="-",
+                    code_language="",
+                    strip=["script", "style"],
+                )
+            )
+
+        self.assertIn("| Manorma Kumari |", markdown)
+        self.assertNotIn("CONFLUENCE:LINK", markdown)
 
 
 if __name__ == "__main__":
