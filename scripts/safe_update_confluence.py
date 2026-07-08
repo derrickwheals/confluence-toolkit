@@ -12,6 +12,7 @@ This wrapper enforces a loss-prevention flow:
 4) Always previews the exact storage-format diff
 5) Always asks for explicit interactive confirmation
 6) Then performs the real create/update through the REST API
+7) Optionally applies one or more labels to the page afterwards (--labels)
 """
 
 from __future__ import annotations
@@ -209,6 +210,18 @@ def create_page_storage(
     return response.json()
 
 
+def set_page_labels(session: requests.Session, api_base: str, page_id: str, labels: List[str]) -> Dict:
+    """Add labels to a page. This only adds labels; it never removes existing ones."""
+    payload = [{"prefix": "global", "name": label} for label in labels]
+    response = session.post(
+        f"{api_base}/content/{page_id}/label",
+        data=json.dumps(payload),
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def print_storage_diff(original_storage: str, new_storage: str) -> None:
     """Print a unified diff of the exact storage body that would be sent."""
     print("\nStorage-format diff:")
@@ -279,7 +292,10 @@ def parse_args() -> argparse.Namespace:
             "  # Replace an exact storage selection using converted Markdown\n"
             "  python3 scripts/safe_update_confluence.py workspace/new-section.md --page-id 123456789 --replace-selection @workspace/old-section.storage\n\n"
             "  # Create a new page from converted Markdown\n"
-            "  python3 scripts/safe_update_confluence.py workspace/new-page.md --space DEV --title 'New Page'\n"
+            "  python3 scripts/safe_update_confluence.py workspace/new-page.md --space DEV --title 'New Page'\n\n"
+            "  # Create a page and apply labels in the same step\n"
+            "  python3 scripts/safe_update_confluence.py workspace/new-page.md --space DEV --title 'New Page' "
+            "--labels tis-report,report-platform\n"
         ),
     )
 
@@ -310,6 +326,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--replace-selection",
         help="Replace this exact storage text. Use @file to read selection text from a file.",
+    )
+    parser.add_argument(
+        "--labels",
+        help="Comma-separated Confluence labels to apply to the page after create/update "
+        "(e.g. tis-report,report-platform). Only adds labels; never removes existing ones.",
     )
     parser.add_argument("--env-file", default=".env", help="Path to .env credentials file")
     parser.add_argument(
@@ -507,6 +528,12 @@ def main() -> int:
                 attachments,
                 skip_existing=not args.force_reupload,
             )
+
+        if args.labels:
+            labels = [label.strip() for label in args.labels.split(",") if label.strip()]
+            if labels:
+                set_page_labels(session, api_base, page_id_for_attachments, labels)
+                print(f"Applied labels: {', '.join(labels)}")
 
     except subprocess.CalledProcessError as exc:
         print(f"\nERROR: Command failed with exit code {exc.returncode}", file=sys.stderr)

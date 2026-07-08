@@ -1,12 +1,14 @@
+import json
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from safe_update_confluence import apply_storage_edit  # noqa: E402
+from safe_update_confluence import apply_storage_edit, set_page_labels  # noqa: E402
 
 
 class ApplyStorageEditTests(unittest.TestCase):
@@ -65,6 +67,31 @@ class ApplyStorageEditTests(unittest.TestCase):
                 fragment_storage="<p>New</p>",
                 insert_before="<p>Missing</p>",
             )
+
+
+class SetPageLabelsTests(unittest.TestCase):
+    def test_posts_one_label_object_per_label_to_the_label_endpoint(self):
+        session = Mock()
+        session.post.return_value = Mock(raise_for_status=Mock(), json=Mock(return_value={"results": []}))
+
+        set_page_labels(session, "https://confluence.example/rest/api", "123456", ["tis-report", "report-platform"])
+
+        session.post.assert_called_once()
+        called_url, called_kwargs = session.post.call_args[0][0], session.post.call_args[1]
+        self.assertEqual(called_url, "https://confluence.example/rest/api/content/123456/label")
+        self.assertEqual(
+            json.loads(called_kwargs["data"]),
+            [{"prefix": "global", "name": "tis-report"}, {"prefix": "global", "name": "report-platform"}],
+        )
+
+    def test_raises_on_http_error(self):
+        session = Mock()
+        response = Mock()
+        response.raise_for_status.side_effect = RuntimeError("boom")
+        session.post.return_value = response
+
+        with self.assertRaises(RuntimeError):
+            set_page_labels(session, "https://confluence.example/rest/api", "123456", ["tis-report"])
 
 
 if __name__ == "__main__":
