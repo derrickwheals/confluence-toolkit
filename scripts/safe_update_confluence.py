@@ -10,7 +10,8 @@ This wrapper enforces a loss-prevention flow:
    - Markdown
    - Confluence wiki markup
 4) Always previews the exact storage-format diff
-5) Always asks for explicit interactive confirmation
+5) Always asks for explicit confirmation, either an interactive TTY prompt or a
+   --confirm phrase supplied after the diff/preview has been reviewed
 6) Then performs the real create/update through the REST API
 7) Optionally applies one or more labels to the page afterwards (--labels)
 """
@@ -266,11 +267,22 @@ def generate_wiki_backups(backup_dir: Path, convert_script: Path) -> List[Path]:
     return created
 
 
-def require_tty_confirmation(expected: str) -> None:
-    """Require an interactive confirmation before sending updates."""
+def require_confirmation(expected: str, supplied: Optional[str]) -> None:
+    """Require explicit confirmation before sending updates.
+
+    Accepts confirmation either non-interactively via --confirm (intended for an
+    agent that has already shown the diff above to a human and gotten their
+    approval in the current conversation) or interactively via a TTY prompt.
+    """
+    if supplied is not None:
+        if supplied != expected:
+            raise RuntimeError("Confirmation text did not match. Update aborted.")
+        return
+
     if not sys.stdin.isatty():
         raise RuntimeError(
-            "Refusing to upload without interactive confirmation (stdin is not a TTY)."
+            "Refusing to upload without confirmation. "
+            f'Re-run with --confirm "{expected}" after reviewing the diff above.'
         )
 
     print("\nConfirmation required before updating Confluence.")
@@ -347,6 +359,12 @@ def parse_args() -> argparse.Namespace:
         "--skip-dry-run",
         action="store_true",
         help="Skip dry-run preview (not recommended)",
+    )
+    parser.add_argument(
+        "--confirm",
+        help="Confirmation phrase to skip the interactive TTY prompt (e.g. --confirm "
+        "'update 123456'). Only supply this after reviewing the printed diff/preview. "
+        "Required when stdin is not a TTY (e.g. when an agent runs this script).",
     )
 
     return parser.parse_args()
@@ -482,7 +500,7 @@ def main() -> int:
             if not args.skip_dry_run:
                 print_storage_diff(original_storage, new_storage)
 
-            require_tty_confirmation(f"update {args.page_id}")
+            require_confirmation(f"update {args.page_id}", args.confirm)
             result = update_page_storage(
                 session=session,
                 api_base=api_base,
@@ -506,7 +524,7 @@ def main() -> int:
                     print("...")
                 print("-" * 72)
 
-            require_tty_confirmation(f"create {args.space}")
+            require_confirmation(f"create {args.space}", args.confirm)
             result = create_page_storage(
                 session=session,
                 api_base=api_base,
